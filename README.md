@@ -208,6 +208,192 @@ EtherSense produces:
 
 ---
 
+# ESP32-S3 CSI Node Firmware
+
+
+## Firmware Files
+
+| File                  | Size   | Flash Address | Description                                                         |
+| --------------------- | ------ | ------------- | ------------------------------------------------------------------- |
+| `bootloader.bin`      | 21 KB  | `0x0`         | ESP32-S3 second-stage bootloader                                    |
+| `partition-table.bin` | 3 KB   | `0x8000`      | Flash partition layout                                              |
+| `esp32-csi-node.bin`  | 789 KB | `0x10000`     | CSI firmware with MAC filtering + TDM support                       |
+| `provision.py`        | —      | —             | NVS provisioning utility (WiFi + network + MAC filter + TDM config) |
+
+---
+
+# Quick Start (No Build Required)
+
+## 1. Install esptool
+
+```bash
+pip install esptool
+```
+
+---
+
+## 2. Flash Firmware
+
+```bash
+python -m esptool --chip esp32s3 --port COM7 --baud 460800 \
+  --before default-reset --after hard-reset \
+  write-flash --flash-mode dio --flash-freq 80m --flash-size 4MB \
+  0x0 bootloader.bin \
+  0x8000 partition-table.bin \
+  0x10000 esp32-csi-node.bin
+```
+
+Replace:
+
+* `COM7` → your serial port
+
+  * Linux: `/dev/ttyUSB0`
+  * macOS: `/dev/cu.usbserial-*`
+
+---
+
+## 3. Provision WiFi Credentials (No Rebuild Required)
+
+```bash
+python provision.py --port COM7 \
+  --ssid "YourWiFi" --password "YourPassword" \
+  --target-ip 192.168.1.20 --target-port 5005
+```
+
+Provisioning is written to NVS. Reflashing is not required for configuration changes.
+
+---
+
+# Run the Aggregator
+
+### Option 1 — Native (Rust)
+
+From the WiFi DensePose sensing server:
+
+```bash
+cargo run -p wifi-densepose-sensing-server -- \
+  --http-port 3000 --source esp32
+```
+
+### Option 2 — Docker
+
+```bash
+docker run -p 3000:3000 -p 5005:5005/udp \
+  ruvnet/wifi-densepose:latest \
+  --source esp32
+```
+
+The aggregator listens for UDP CSI packets on port `5005`.
+
+---
+
+# MAC Address Filtering
+
+To prevent CSI mixing across multiple access points, filter to a single AP.
+
+### Runtime (No Reflash)
+
+```bash
+python provision.py --port COM7 \
+  --filter-mac "AA:BB:CC:DD:EE:FF"
+```
+
+### Compile-Time (Kconfig)
+
+Set:
+
+```
+CONFIG_CSI_FILTER_MAC="AA:BB:CC:DD:EE:FF"
+```
+
+in `sdkconfig.defaults`.
+
+---
+
+# TDM Mesh Setup (Multistatic Mode)
+
+For 3+ node deployments:
+
+### Node 0
+
+```bash
+python provision.py --port COM7 \
+  --ssid "WiFi" --password "pass" \
+  --target-ip 192.168.1.20 \
+  --tdm-slot 0 --tdm-total 3
+```
+
+### Node 1
+
+```bash
+python provision.py --port COM8 \
+  --tdm-slot 1 --tdm-total 3
+```
+
+### Node 2
+
+```bash
+python provision.py --port COM9 \
+  --tdm-slot 2 --tdm-total 3
+```
+
+Each node transmits CSI frames only during its assigned time slot.
+
+This prevents RF contention and enables deterministic multistatic fusion.
+
+---
+
+# Hardware Compatibility
+
+| Board              | Status           | Notes                       |
+| ------------------ | ---------------- | --------------------------- |
+| ESP32-S3-DevKitC-1 | Verified         | Tested with CP210x USB-UART |
+| ESP32-S3-WROOM-1   | Expected         | Same SoC                    |
+| ESP32-S3-MINI-1    | Expected         | Same SoC                    |
+| ESP32 (Classic)    | Rebuild Required | `idf.py set-target esp32`   |
+
+---
+
+# Firmware Capabilities
+
+* WiFi STA + promiscuous mode CSI capture
+* ADR-018 binary serialization
+
+  * 20-byte header
+  * Raw I/Q payload
+* UDP streaming to configurable aggregator
+* MAC address filtering (runtime + compile-time)
+* TDM mesh time-slot protocol (ADR-029 / ADR-031)
+* Channel hopping with configurable dwell time
+* NVS runtime configuration:
+
+  * SSID
+  * Password
+  * Target IP/Port
+  * Node ID
+  * MAC filter
+  * TDM parameters
+* ~20 Hz CSI frame rate (LLTF + HT-LTF + STBC HT-LTF2)
+* 64–128 subcarriers per frame (bandwidth dependent)
+* Automatic WiFi reconnection (up to 10 retries)
+
+---
+
+# Deployment Notes
+
+* Maintain fixed node geometry for stable field modeling.
+* Use a dedicated 2.4 GHz channel where possible.
+* Disable aggressive router band steering.
+* Baseline capture after installation improves coherence gating stability.
+
+---
+
+If you want this tightened further, I can:
+
+* Merge it cleanly into your full README structure.
+* Separate firmware into `/firmware/README.md`.
+* Or convert this into a production-grade installation guide.
+
 # Ethical & Privacy Notice
 
 EtherSense operates through passive RF reflection modeling.
